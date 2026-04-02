@@ -2,15 +2,9 @@
 using RustPlus_Toolbox.Models;
 using RustPlusApi;
 using RustPlusApi.Data;
-using RustPlusApi.Fcm;
-using RustPlusApi.Fcm.Data;
-using RustPlusApi.Interfaces;
-using Serilog.Core;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Windows.Forms;
 using Timer = System.Windows.Forms.Timer;
 
 namespace RustPlus_Toolbox
@@ -22,9 +16,7 @@ namespace RustPlus_Toolbox
         private bool _runningGetData;
         private List<ServerItem> _servers = new List<ServerItem>();
         private RustPlus _rustPlus = null;
-        //private RustPlusFcm _rustPlusFcm = null;
         private ServerItem _server = null;
-        //private RustPlusFcmListener _rustPlusFcmListener = null;
         private uint? _lastNumberOfPlayersOnline = 0;
 
         // Time prediction fields
@@ -115,7 +107,7 @@ namespace RustPlus_Toolbox
             targetSize.Height = Math.Min(targetSize.Height, maxHeight);
 
             // Optional: also enforce a minimum.
-            targetSize.Width = Math.Max(targetSize.Width, 480); // 502, 196
+            targetSize.Width = Math.Max(targetSize.Width, 480);
             targetSize.Height = Math.Max(targetSize.Height, 180);
 
             Size = targetSize;
@@ -132,7 +124,6 @@ namespace RustPlus_Toolbox
 
                 if (_rustPlus == null)
                 {
-                    // Get from C:\Users\Rickard\AppData\Roaming\RustPlusDesk\profiles.json
                     _rustPlus = new RustPlus(_server.ServerIP, _server.RustPlusPort, _server.SteamId, _server.PlayerToken, false);
                     _rustPlus.OnStorageMonitorTriggered += _rustPlus_OnStorageMonitorTriggered;
                     _rustPlus.OnSmartSwitchTriggered += _rustPlus_OnSmartSwitchTriggered;
@@ -273,7 +264,6 @@ namespace RustPlus_Toolbox
         private void _rustPlus_OnSmartSwitchTriggered(object? sender, RustPlusApi.Data.Events.SmartSwitchEventArg e)
         {
             _logger.LogInformation("Smart Switch triggered: " + System.Text.Json.JsonSerializer.Serialize(e));
-            // {"Id":7892588,"IsActive":true}
         }
 
         private async void Timer_Tick_GetdataAsync(object? sender, EventArgs e)
@@ -387,15 +377,6 @@ namespace RustPlus_Toolbox
                     _logger.LogInformation("Player count changed: {PlayerCount} / {MaxPlayerCount} - Queue: {QueuedPlayerCount}", 
                         responseinfo.Data.PlayerCount, responseinfo.Data.MaxPlayerCount, responseinfo.Data.QueuedPlayerCount);
                     
-                    // Show toast notification for player count change
-                    if (_lastNumberOfPlayersOnline.HasValue && _lastNumberOfPlayersOnline.Value > 0 
-                        && responseinfo.Data.PlayerCount.HasValue 
-                        && responseinfo.Data.MaxPlayerCount.HasValue 
-                        && responseinfo.Data.QueuedPlayerCount.HasValue)
-                    {
-                        //TODO: Add some kind of notification that the information changed, maybe only if the player count changed? Or if the queue changed? Or both?
-                    }
-
                     _lastNumberOfPlayersOnline = responseinfo.Data.PlayerCount;
                 }
             }

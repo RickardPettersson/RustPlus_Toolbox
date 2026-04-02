@@ -13,12 +13,6 @@
         /// <param name="disposing">true if managed resources should be disposed; otherwise, false.</param>
         protected override void Dispose(bool disposing)
         {
-            //// Stop when done
-            //_rustPlusFcmListener?.StopAsync().GetAwaiter().GetResult();
-
-            //// Or use Dispose
-            //_rustPlusFcmListener?.Dispose();
-
             if (disposing && (components != null))
             {
                 components.Dispose();
