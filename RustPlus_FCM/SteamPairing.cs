@@ -43,15 +43,15 @@ public static class SteamPairing
         listener.Prefixes.Add("http://localhost:3000/");
         listener.Start();
 
-        Process? browserProcess = null;
+        Process? chromeProcess = null;
         try
         {
-            browserProcess = LaunchBrowser("http://localhost:3000", logger);
+            chromeProcess = LaunchBrowser("http://localhost:3000", logger);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Failed to launch browser.");
-            Environment.Exit(1);
+            logger.LogError(ex, "Failed to launch Chrome. Is Google Chrome installed?");
+            throw;
         }
 
         using var reg = cancellationToken.Register(() =>
@@ -95,7 +95,7 @@ public static class SteamPairing
                             tcs.TrySetException(new InvalidOperationException(message));
                         }
 
-                        KillBrowserProcess(browserProcess);
+                        KillProcess(chromeProcess);
                         try { listener.Stop(); } catch { }
                         return;
                     }
@@ -117,71 +117,66 @@ public static class SteamPairing
     }
 
     /// <summary>
-    /// Tries to launch Chrome/Chromium with the required security flags first.
-    /// The pairing page needs --disable-web-security and --disable-popup-blocking
-    /// because it accesses a cross-origin popup (companion-rust.facepunch.com)
-    /// from localhost via JavaScript.
-    /// Falls back to the system default browser if Chrome is not found.
+    /// Launches a Chromium-based browser (Edge, Chrome, Chromium) with --disable-web-security
+    /// so the localhost pairing page can inject ReactNativeWebView.postMessage into the
+    /// cross-origin Facepunch login popup. This cannot work in a normal browser session
+    /// due to the same-origin policy.
     /// </summary>
-    private static Process? LaunchBrowser(string url, ILogger logger)
+    private static Process LaunchBrowser(string url, ILogger logger)
     {
-        // Try Chrome/Chromium first — the cross-origin popup hack requires these flags
-        var chromePaths = new[]
+        var chromiumPaths = new[]
         {
-            // Windows
+            // Google Chrome
             @"C:\Program Files\Google\Chrome\Application\chrome.exe",
             @"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 @"Google\Chrome\Application\chrome.exe"),
+
+            // Microsoft Edge (ships with Windows 10+)
+            @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            @"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                @"Microsoft\Edge\Application\msedge.exe"),
+            
             // Linux
             "/usr/bin/google-chrome",
+            "/usr/bin/microsoft-edge",
             "/usr/bin/chromium-browser",
+            
             // macOS
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
         };
 
-        var chromePath = chromePaths.FirstOrDefault(File.Exists);
+        var browserPath = chromiumPaths.FirstOrDefault(File.Exists)
+            ?? throw new FileNotFoundException(
+                "A Chromium-based browser (Edge or Chrome) is required for Steam account linking. " +
+                "The Facepunch login page uses cross-origin messaging that only works " +
+                "with the --disable-web-security flag. Please install Edge or Chrome and try again.");
 
-        if (chromePath is not null)
+        logger.LogInformation("Launching {Browser} with security flags disabled for Steam pairing.",
+            Path.GetFileNameWithoutExtension(browserPath));
+
+        var userDataDir = Path.Combine(Path.GetTempPath(), "rustplus-csharp-browser-profile");
+
+        var args = string.Join(' ',
+        [
+            "--disable-web-security",
+            "--disable-popup-blocking",
+            "--disable-site-isolation-trials",
+            $"--user-data-dir={userDataDir}",
+            url
+        ]);
+
+        return Process.Start(new ProcessStartInfo
         {
-            logger.LogInformation("Found Chrome at {Path}. Launching with required security flags.", chromePath);
-
-            var userDataDir = Path.Combine(Path.GetTempPath(), "rustplus-csharp-chrome-profile");
-
-            var args = string.Join(' ',
-            [
-                "--disable-web-security",
-                "--disable-popup-blocking",
-                "--disable-site-isolation-trials",
-                $"--user-data-dir={userDataDir}",
-                url
-            ]);
-
-            return Process.Start(new ProcessStartInfo
-            {
-                FileName = chromePath,
-                Arguments = args,
-                UseShellExecute = false,
-            });
-        }
-
-        // Fall back to the system default browser
-        logger.LogWarning(
-            "Google Chrome not found. Opening with default browser. " +
-            "Note: pairing may fail if your browser blocks cross-origin popups. " +
-            "Install Chrome for the most reliable experience.");
-
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = url,
-            UseShellExecute = true,
-        });
-
-        // UseShellExecute = true doesn't return a trackable process handle
-        return null;
+            FileName = browserPath,
+            Arguments = args,
+            UseShellExecute = false,
+        }) ?? throw new InvalidOperationException($"Failed to start {Path.GetFileName(browserPath)}.");
     }
 
-    private static void KillBrowserProcess(Process? process)
+    private static void KillProcess(Process? process)
     {
         try
         {

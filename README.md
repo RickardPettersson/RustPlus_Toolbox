@@ -26,7 +26,7 @@ On first launch the application walks you through linking your Steam account and
 |---|---|
 | **Windows 10** (build 19041) or later | The app uses Windows Forms |
 | **.NET 10 Runtime** | Download from [dot.net](https://dotnet.microsoft.com/download) |
-| **Google Chrome** | Required only during first-run Steam linking |
+| **Chromium-based browser** | Chrome or Edge (Edge ships with Windows 10+). Required only during first-run Steam linking — see [Why Chrome or Edge?](#why-chrome-or-edge) |
 | **Rust game server** with Rust+ companion enabled | You need to be able to pair via the in-game Rust+ menu |
 
 ### Running the application
@@ -35,18 +35,34 @@ On first launch the application walks you through linking your Steam account and
 2. Run **RustPlus_Toolbox.exe**.
 3. **First launch only** — the app will:
    - Register with Firebase Cloud Messaging (automatic, takes a few seconds).
-   - Open Google Chrome so you can log in with your Steam account and link it to Rust+.
+   - Open a Chromium-based browser (Chrome or Edge) so you can log in with your Steam account and link it to Rust+.
+   - Save your credentials to `rustplus.config.json` so you won't need to repeat this step.
    - Show a dialog asking you to pair a server from the in-game Rust+ menu.
    - Once you pair a server, the connection details are saved to `ServerList.json` and the app connects.
-4. **Every subsequent launch** — the app loads the saved configuration and connects to your server immediately.
+4. **Subsequent launches** — if `rustplus.config.json` exists but `ServerList.json` is empty (e.g. after a wipe), the app skips registration and goes straight to listening for a new server pairing.
+5. **Normal startup** — if both config files exist and the server list has entries, the app connects to your server immediately.
 
 ### Configuration files
 
 | File | Purpose |
 |---|---|
-| `rustplus.config.json` | FCM & Steam credentials (created on first run). Delete this file to re-register. |
+| `rustplus.config.json` | FCM & Steam credentials (created on first run). Delete this file to re-register from scratch. |
 | `ServerList.json` | Paired server details — IP, port, Steam ID, player token, entities. |
 | `logs/app-*.log` | Daily rolling log files (kept for 14 days). |
+
+### Why Chrome or Edge?
+
+During Steam account linking the app serves a local page on `localhost:3000` that opens a popup to the Facepunch Rust+ login page. When the login completes, the Facepunch page calls `window.ReactNativeWebView.postMessage(...)` — a function that the local page injects into the popup window. Because `localhost` and `companion-rust.facepunch.com` are different origins, this cross-origin JavaScript injection is blocked by the browser's same-origin policy.
+
+The only way to make it work is to launch a Chromium-based browser with the `--disable-web-security` flag. Both **Google Chrome** and **Microsoft Edge** support this flag. Edge ships pre-installed on Windows 10 and later, so most users won't need to install anything extra.
+
+The app searches for browsers in this order:
+
+1. Google Chrome
+2. Microsoft Edge
+3. Chromium (Linux)
+
+If none are found, a clear error message is shown.
 
 ---
 
@@ -103,7 +119,7 @@ RustPlus_Toolbox.slnx
         |-- GoogleFcm.cs         Firebase/GCM device registration
         |-- McsClient.cs         Google MCS push notification listener (TLS)
         |-- ApiClient.cs         Expo push token & Rust+ Companion API calls
-        |-- SteamPairing.cs      Steam OAuth login via local HTTP server + Chrome
+        |-- SteamPairing.cs      Steam OAuth login via local HTTP server + Chromium browser
         |-- RustPlusNotification.cs  Notification data models
         |-- ConfigManager.cs     JSON config read/write
         |-- Protobuf.cs          Lightweight protobuf encoder/decoder
@@ -158,7 +174,8 @@ The diagram below shows the step-by-step flow from startup to real-time monitori
        |    |                                      |
        |    |  3. SteamPairing.LinkSteamAsync()    |
        |    |     - Start local HTTP server :3000  |
-       |    |     - Launch Chrome with login page  |
+       |    |     - Launch Chrome/Edge with        |
+       |    |       --disable-web-security         |
        |    |     - Capture Steam auth token       |
        |    |                                      |
        |    |  4. ApiClient.RegisterWithRustPlus() |
