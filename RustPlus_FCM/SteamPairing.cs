@@ -43,14 +43,14 @@ public static class SteamPairing
         listener.Prefixes.Add("http://localhost:3000/");
         listener.Start();
 
-        Process? chromeProcess = null;
+        Process? browserProcess = null;
         try
         {
-            chromeProcess = LaunchChrome("http://localhost:3000");
+            browserProcess = LaunchBrowser("http://localhost:3000", logger);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Failed to launch Google Chrome. Do you have it installed?");
+            logger.LogError(ex, "Failed to launch browser.");
             Environment.Exit(1);
         }
 
@@ -75,7 +75,7 @@ public static class SteamPairing
                         var token = request.QueryString["token"];
                         if (!string.IsNullOrEmpty(token))
                         {
-                            var message = "Steam Account successfully linked with rustplus.js, you can now close this window and go back to the console.";
+                            var message = "Steam Account successfully linked with Rust+. You can now close this browser tab.";
                             var buffer = Encoding.UTF8.GetBytes(message);
                             response.ContentType = "text/plain";
                             response.ContentLength64 = buffer.Length;
@@ -95,7 +95,7 @@ public static class SteamPairing
                             tcs.TrySetException(new InvalidOperationException(message));
                         }
 
-                        KillChrome(chromeProcess);
+                        KillBrowserProcess(browserProcess);
                         try { listener.Stop(); } catch { }
                         return;
                     }
@@ -116,8 +116,16 @@ public static class SteamPairing
         return await tcs.Task;
     }
 
-    private static Process LaunchChrome(string url)
+    /// <summary>
+    /// Tries to launch Chrome/Chromium with the required security flags first.
+    /// The pairing page needs --disable-web-security and --disable-popup-blocking
+    /// because it accesses a cross-origin popup (companion-rust.facepunch.com)
+    /// from localhost via JavaScript.
+    /// Falls back to the system default browser if Chrome is not found.
+    /// </summary>
+    private static Process? LaunchBrowser(string url, ILogger logger)
     {
+        // Try Chrome/Chromium first — the cross-origin popup hack requires these flags
         var chromePaths = new[]
         {
             // Windows
@@ -132,29 +140,48 @@ public static class SteamPairing
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         };
 
-        var chromePath = chromePaths.FirstOrDefault(File.Exists)
-            ?? throw new FileNotFoundException("Google Chrome not found.");
+        var chromePath = chromePaths.FirstOrDefault(File.Exists);
 
-        var userDataDir = Path.Combine(Path.GetTempPath(), "rustplus-csharp-chrome-profile");
-
-        var args = string.Join(' ',
-        [
-            "--disable-web-security",
-            "--disable-popup-blocking",
-            "--disable-site-isolation-trials",
-            $"--user-data-dir={userDataDir}",
-            url
-        ]);
-
-        return Process.Start(new ProcessStartInfo
+        if (chromePath is not null)
         {
-            FileName = chromePath,
-            Arguments = args,
-            UseShellExecute = false,
-        }) ?? throw new InvalidOperationException("Failed to start Chrome process.");
+            logger.LogInformation("Found Chrome at {Path}. Launching with required security flags.", chromePath);
+
+            var userDataDir = Path.Combine(Path.GetTempPath(), "rustplus-csharp-chrome-profile");
+
+            var args = string.Join(' ',
+            [
+                "--disable-web-security",
+                "--disable-popup-blocking",
+                "--disable-site-isolation-trials",
+                $"--user-data-dir={userDataDir}",
+                url
+            ]);
+
+            return Process.Start(new ProcessStartInfo
+            {
+                FileName = chromePath,
+                Arguments = args,
+                UseShellExecute = false,
+            });
+        }
+
+        // Fall back to the system default browser
+        logger.LogWarning(
+            "Google Chrome not found. Opening with default browser. " +
+            "Note: pairing may fail if your browser blocks cross-origin popups. " +
+            "Install Chrome for the most reliable experience.");
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = url,
+            UseShellExecute = true,
+        });
+
+        // UseShellExecute = true doesn't return a trackable process handle
+        return null;
     }
 
-    private static void KillChrome(Process? process)
+    private static void KillBrowserProcess(Process? process)
     {
         try
         {
