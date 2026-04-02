@@ -30,11 +30,10 @@ namespace RustPlus_Toolbox
         private uint? _maxPlayerCount;
         private uint? _queuedPlayerCount;
         private const int ApiFetchIntervalSeconds = 60;
-        
-        // Empirical time rate tracking
-        private double _previousServerTime;
-        private DateTime _previousApiFetchTime = DateTime.MinValue;
-        private double _inGameHoursPerRealSecond;
+
+        // Day/night time rates (in-game hours per real second)
+        private double _dayRate;
+        private double _nightRate;
 
         public MainWindow(ILogger<MainWindow> logger)
         {
@@ -313,54 +312,17 @@ namespace RustPlus_Toolbox
 
             if (response.IsSuccess)
             {
-                var now = DateTime.UtcNow;
-                var newServerTime = response.Data.Time;
-                
-                // Calculate empirical time progression rate from consecutive API calls
-                if (_previousApiFetchTime != DateTime.MinValue && _previousServerTime > 0)
-                {
-                    var elapsedRealSeconds = (now - _previousApiFetchTime).TotalSeconds;
-                    if (elapsedRealSeconds > 0)
-                    {
-                        // Calculate how many in-game hours passed
-                        var elapsedInGameHours = newServerTime - _previousServerTime;
-                        
-                        // Handle day wraparound (e.g., 23:30 -> 00:30 = +1 hour, not -23 hours)
-                        if (elapsedInGameHours < -12)
-                        {
-                            elapsedInGameHours += 24.0;
-                        }
-                        else if (elapsedInGameHours > 12)
-                        {
-                            elapsedInGameHours -= 24.0;
-                        }
-                        
-                        // Calculate rate: in-game hours per real second
-                        _inGameHoursPerRealSecond = elapsedInGameHours / elapsedRealSeconds;
-                        
-                        _logger.LogDebug("Calculated time rate: {Rate} in-game hours/second (elapsed {ElapsedReal}s real, {ElapsedGame}h in-game)", 
-                            _inGameHoursPerRealSecond, elapsedRealSeconds, elapsedInGameHours);
-                    }
-                }
-                else
-                {
-                    // First fetch - use a default rate based on typical Rust settings
-                    // Default: 1 hour real time = 24 in-game hours, so 1 real second = 24/3600 in-game hours
-                    _inGameHoursPerRealSecond = 24.0 / 3600.0; // Will be corrected on next fetch
-                }
-                
-                // Store current values for next comparison
-                _previousServerTime = newServerTime;
-                _previousApiFetchTime = now;
-                
-                _lastServerTime = newServerTime;
+                _lastServerTime = response.Data.Time;
                 _dayLengthMinutes = response.Data.DayLengthMinutes;
                 _sunrise = response.Data.Sunrise;
                 _sunset = response.Data.Sunset;
-                _lastApiFetchTime = now;
+                _lastApiFetchTime = DateTime.UtcNow;
 
-                _logger.LogDebug("Fetched time from API: {Time}, DayLength: {DayLength} minutes, Rate: {Rate}", 
-                    _lastServerTime, _dayLengthMinutes, _inGameHoursPerRealSecond);
+                CalculateTimeRates();
+
+                _logger.LogDebug(
+                    "Time: {Time:F2}, DayLength: {DayLength} min, Sunrise: {Sunrise}, Sunset: {Sunset}, DayRate: {DayRate:F6}, NightRate: {NightRate:F6} (in-game h/real s)",
+                    _lastServerTime, _dayLengthMinutes, _sunrise, _sunset, _dayRate, _nightRate);
             }
 
             var responseinfo = await _rustPlus.GetInfoAsync().WaitAsync(TimeSpan.FromSeconds(10));
@@ -382,45 +344,108 @@ namespace RustPlus_Toolbox
             }
         }
 
-        private void UpdatePredictedTimeUI()
+        /// <summary>
+        /// Computes separate day and night time-progression rates from the server's
+        /// DayLengthMinutes, sunrise, and sunset values.
+        ///
+        /// Rust runs day and night at different speeds:
+        ///   - DayLengthMinutes = real minutes for the daytime portion (sunrise → sunset)
+        ///   - Night is scaled so the full 24h cycle completes; by default night passes
+        ///     roughly 2× faster than day.
+        ///
+        /// Rates are expressed as in-game hours per real second.
+        /// </summary>
+        private void CalculateTimeRates()
         {
-            if (_lastApiFetchTime == DateTime.MinValue || _inGameHoursPerRealSecond <= 0)
+            if (_dayLengthMinutes <= 0 || _sunrise >= _sunset)
                 return;
 
-            // Calculate predicted server time based on elapsed real time and empirical rate
-            var elapsedRealSeconds = (DateTime.UtcNow - _lastApiFetchTime).TotalSeconds;
-            var elapsedInGameHours = elapsedRealSeconds * _inGameHoursPerRealSecond;
-            
-            var predictedTime = (_lastServerTime + elapsedInGameHours) % 24.0;
-            if (predictedTime < 0) predictedTime += 24.0;
+            double dayHours = _sunset - _sunrise;
+            double nightHours = 24.0 - dayHours;
 
-            // Format predicted time
-            int timeH = (int)Math.Floor(predictedTime);
-            int timeM = (int)Math.Round((predictedTime - timeH) * 60);
-            if (timeM == 60) { timeH = (timeH + 1) % 24; timeM = 0; }
-            string time_hhmm = ToHHMM(timeH, timeM);
+            // Day rate: server tells us exactly how many real minutes daytime takes
+            double dayRealSeconds = _dayLengthMinutes * 60.0;
+            _dayRate = dayHours / dayRealSeconds;
 
-            // Format sunrise/sunset
-            int sunriseH = (int)Math.Floor(_sunrise);
-            int sunriseM = (int)Math.Round((_sunrise - sunriseH) * 60);
-            if (sunriseM == 60) { sunriseH = (sunriseH + 1) % 24; sunriseM = 0; }
-            string sunrise_hhmm = ToHHMM(sunriseH, sunriseM);
+            // Night rate: Rust default night length = DayLengthMinutes / 3
+            // (env.daylength = 30 → night ≈ 10 real minutes).
+            // This ratio holds unless the server overrides env.nightlength separately,
+            // but the Rust+ API doesn't expose night length directly.
+            double nightRealSeconds = (_dayLengthMinutes / 3.0) * 60.0;
+            _nightRate = nightHours / nightRealSeconds;
+        }
 
-            int sunsetH = (int)Math.Floor(_sunset);
-            int sunsetM = (int)Math.Round((_sunset - sunsetH) * 60);
-            if (sunsetM == 60) { sunsetH = (sunsetH + 1) % 24; sunsetM = 0; }
-            string sunset_hhmm = ToHHMM(sunsetH, sunsetM);
+        /// <summary>
+        /// Returns the correct time-progression rate for the given in-game hour,
+        /// using the day rate during daytime and the night rate during nighttime.
+        /// </summary>
+        private double GetRateForTime(double inGameHour)
+        {
+            bool isDay = inGameHour >= _sunrise && inGameHour < _sunset;
+            return isDay ? _dayRate : _nightRate;
+        }
 
-            // Determine if it's day or night
+        private void UpdatePredictedTimeUI()
+        {
+            if (_lastApiFetchTime == DateTime.MinValue || _dayRate <= 0 || _nightRate <= 0)
+                return;
+
+            // Predict current time by stepping forward from last known server time,
+            // switching between day/night rate at sunrise/sunset boundaries.
+            double elapsedRealSeconds = (DateTime.UtcNow - _lastApiFetchTime).TotalSeconds;
+            double predictedTime = PredictServerTime(_lastServerTime, elapsedRealSeconds);
+
+            string time_hhmm = FormatInGameTime(predictedTime);
+            string sunrise_hhmm = FormatInGameTime(_sunrise);
+            string sunset_hhmm = FormatInGameTime(_sunset);
+
             bool isDay = predictedTime >= _sunrise && predictedTime < _sunset;
             string dayNightIndicator = isDay ? "☀️" : "🌙";
 
-            // Update UI
             lblServerTime.Text = $"Time: {time_hhmm} {dayNightIndicator}";
             lblServerName.Text = $"Server Name: {_serverName}";
-            
-            string sunsetSunriseInfo = $"Sunrise: {sunrise_hhmm} - Sunset: {sunset_hhmm}";
-            lblNumberOfPlayers.Text = $"Players Online: {_playerCount} / {_maxPlayerCount} - Queue: {_queuedPlayerCount} - {sunsetSunriseInfo}";
+            lblNumberOfPlayers.Text = $"Players Online: {_playerCount} / {_maxPlayerCount} - Queue: {_queuedPlayerCount} - Sunrise: {sunrise_hhmm} - Sunset: {sunset_hhmm}";
+        }
+
+        /// <summary>
+        /// Steps forward from <paramref name="startTime"/> by <paramref name="realSeconds"/>
+        /// real seconds, switching between day and night rate at sunrise/sunset boundaries.
+        /// </summary>
+        private double PredictServerTime(double startTime, double realSeconds)
+        {
+            double currentTime = startTime;
+            double remaining = realSeconds;
+
+            while (remaining > 0.001)
+            {
+                double rate = GetRateForTime(currentTime);
+                bool isDay = currentTime >= _sunrise && currentTime < _sunset;
+
+                // How far (in-game hours) until the next boundary?
+                double nextBoundary = isDay ? _sunset : (_sunrise + 24.0);
+                double hoursToNextBoundary = nextBoundary - currentTime;
+                if (hoursToNextBoundary <= 0)
+                    hoursToNextBoundary += 24.0;
+
+                // How many real seconds to reach that boundary at the current rate?
+                double realSecondsToNextBoundary = hoursToNextBoundary / rate;
+
+                if (remaining <= realSecondsToNextBoundary)
+                {
+                    currentTime += remaining * rate;
+                    remaining = 0;
+                }
+                else
+                {
+                    currentTime += hoursToNextBoundary;
+                    remaining -= realSecondsToNextBoundary;
+                }
+
+                currentTime %= 24.0;
+                if (currentTime < 0) currentTime += 24.0;
+            }
+
+            return currentTime;
         }
 
         private const string FcmConfigFile = "rustplus.config.json";
@@ -666,10 +691,12 @@ namespace RustPlus_Toolbox
             File.WriteAllText("ServerList.json", json);
         }
 
-        static string ToHHMM(int h, int m)
+        private static string FormatInGameTime(double inGameHour)
         {
+            int h = (int)Math.Floor(inGameHour);
+            int m = (int)Math.Round((inGameHour - h) * 60);
+            if (m == 60) { h++; m = 0; }
             h = ((h % 24) + 24) % 24;
-            m = ((m % 60) + 60) % 60;
             return $"{h:00}:{m:00}";
         }
 
