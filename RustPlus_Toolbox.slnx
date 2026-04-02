@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="RustPlus_Toolbox/RustPlus_Toolbox.csproj" />
+  <Project Path="RustPlus_FCM/RustPlus_FCM.csproj" />
+</Solution>
