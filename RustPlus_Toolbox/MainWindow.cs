@@ -414,6 +414,12 @@ namespace RustPlus_Toolbox
             lblServerName.Text = $"Server Name: {_serverName}";
             lblNumberOfPlayers.Text = $"Players Online: {_playerCount} / {_maxPlayerCount} - Queue: {_queuedPlayerCount} - Sunrise: {sunrise_hhmm} - Sunset: {sunset_hhmm}";
 
+            // Show game time in title bar when minimized
+            if (WindowState == FormWindowState.Minimized)
+                Text = $"{time_hhmm} - RustPlus Toolbox";
+            else
+                Text = "RustPlus Toolbox";
+
             // Update Arctis Nova Pro OLED display if connected
             if (_oled.IsConnected || _oled.TryConnect())
             {
