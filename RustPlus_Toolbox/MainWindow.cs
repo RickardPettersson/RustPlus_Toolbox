@@ -25,6 +25,9 @@ namespace RustPlus_Toolbox
         private McsClient? _mcsClient;
         private CancellationTokenSource? _mcsCts;
 
+        // Discord webhook service for alarm notifications
+        private readonly DiscordWebhookService _discordWebhook;
+
         // Time prediction fields
         private DateTime _lastApiFetchTime = DateTime.MinValue;
         private double _lastServerTime;
@@ -47,6 +50,8 @@ namespace RustPlus_Toolbox
             _logger = logger;
 
             // Try to connect to Arctis Nova Pro OLED (non-blocking, optional)
+            _discordWebhook = new DiscordWebhookService(logger);
+
             _oled = new ArctisNovaOledService(logger);
             if (_oled.TryConnect())
                 _logger.LogInformation("Arctis Nova Pro OLED display available.");
@@ -809,6 +814,7 @@ namespace RustPlus_Toolbox
                         _logger.LogInformation(
                             "FCM [{Channel}]: {Title} — {Message} — Server: {Name}",
                             channelId, title, message, body?.Name ?? "unknown");
+                        _ = HandleAlarmNotificationAsync(body, title, message);
                         break;
 
                     case "player":
@@ -948,6 +954,31 @@ namespace RustPlus_Toolbox
             {
                 _logger.LogWarning(ex, "Failed to fetch initial state for entity {EntityId}", entity.EntityId);
             }
+        }
+
+        /// <summary>
+        /// Handles an alarm notification by sending a Discord webhook if configured.
+        /// Uses entity-specific settings if the alarm entity is found, otherwise server defaults.
+        /// </summary>
+        private async Task HandleAlarmNotificationAsync(RustPlusNotificationBody? body, string title, string message)
+        {
+            if (_server == null)
+                return;
+
+            // Try to find entity-specific webhook settings
+            DiscordWebhookSettings? entitySettings = null;
+
+            if (body?.EntityId != null && uint.TryParse(body.EntityId, out var entityId))
+            {
+                var entity = _server.Entities.FirstOrDefault(e => e.EntityId == entityId);
+                entitySettings = entity?.DiscordWebhook;
+            }
+
+            await _discordWebhook.SendAlarmNotificationAsync(
+                _server.DiscordWebhook,
+                entitySettings,
+                title,
+                message);
         }
 
         /// <summary>
