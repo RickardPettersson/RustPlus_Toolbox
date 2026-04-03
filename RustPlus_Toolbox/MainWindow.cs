@@ -12,7 +12,8 @@ namespace RustPlus_Toolbox
     public partial class MainWindow : Form
     {
         private readonly ILogger<MainWindow> _logger;
-        private readonly Timer _timer; 
+        private readonly Timer _timer;
+        private readonly ArctisNovaOledService _oled;
         private bool _runningGetData;
         private List<ServerItem> _servers = new List<ServerItem>();
         private RustPlus _rustPlus = null;
@@ -39,6 +40,13 @@ namespace RustPlus_Toolbox
         {
             InitializeComponent();
             _logger = logger;
+
+            // Try to connect to Arctis Nova Pro OLED (non-blocking, optional)
+            _oled = new ArctisNovaOledService(logger);
+            if (_oled.TryConnect())
+                _logger.LogInformation("Arctis Nova Pro OLED display available.");
+            else
+                _logger.LogInformation("No Arctis Nova Pro OLED display detected. Continuing without it.");
 
             SetupServerList();
 
@@ -405,6 +413,12 @@ namespace RustPlus_Toolbox
             lblServerTime.Text = $"Time: {time_hhmm} {dayNightIndicator}";
             lblServerName.Text = $"Server Name: {_serverName}";
             lblNumberOfPlayers.Text = $"Players Online: {_playerCount} / {_maxPlayerCount} - Queue: {_queuedPlayerCount} - Sunrise: {sunrise_hhmm} - Sunset: {sunset_hhmm}";
+
+            // Update Arctis Nova Pro OLED display if connected
+            if (_oled.IsConnected || _oled.TryConnect())
+            {
+                _oled.UpdateDisplay(time_hhmm, isDay, sunrise_hhmm, sunset_hhmm);
+            }
         }
 
         /// <summary>
