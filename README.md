@@ -9,10 +9,14 @@ On first launch the application walks you through linking your Steam account and
 ## Features
 
 - **Live server time** displayed in a large, easy-to-read clock with a day/night indicator
+- **Game time in taskbar** — when the window is minimized, the current in-game time is shown in the taskbar title
 - **Player count & queue** updated every 60 seconds
 - **Sunrise & sunset times** so you always know when night is coming
 - **Smart Switch buttons** — toggle lights, turrets or any smart switch directly from the app, with green/red colour coding for on/off state
 - **Real-time entity updates** — switch states update instantly when changed in-game
+- **Live entity pairing** — pair new entities in-game while the app is running; Smart Switches appear as buttons immediately without restarting
+- **FCM push notification listener** — listens for all Rust+ push notifications (alarms, player events, news, pairings) in the background with auto-reconnect
+- **Discord webhook alerts** — send alarm notifications to Discord with customizable messages and user mentions, configurable per server or per individual Smart Alarm
 - **Automatic FCM registration** — first-run wizard handles Firebase Cloud Messaging setup, Steam linking, and server pairing
 - **Persistent configuration** — credentials and server list are saved locally so you only pair once
 
@@ -47,8 +51,105 @@ On first launch the application walks you through linking your Steam account and
 | File | Purpose |
 |---|---|
 | `rustplus.config.json` | FCM & Steam credentials (created on first run). Delete this file to re-register from scratch. |
-| `ServerList.json` | Paired server details — IP, port, Steam ID, player token, entities. |
+| `ServerList.json` | Paired server details — IP, port, Steam ID, player token, entities, and Discord webhook settings. |
 | `logs/app-*.log` | Daily rolling log files (kept for 14 days). |
+
+### After a server wipe
+
+When your Rust server wipes, the Rust+ companion settings are reset on the server side. Your local `rustplus.config.json` (FCM/Steam credentials) is still valid, but the server pairing (player token) is no longer accepted.
+
+To reconnect after a wipe:
+
+1. **Close** RustPlus Toolbox.
+2. **Delete** `ServerList.json` from the application directory.
+3. **Start** RustPlus Toolbox again — it will detect that no servers are configured and prompt you to pair a new server.
+4. **Open Rust** and pair your server via the in-game Rust+ companion menu.
+5. The app will automatically detect the pairing and save the new server details.
+
+> **Note:** You do **not** need to delete `rustplus.config.json` — your FCM and Steam credentials survive wipes. Only the server list needs to be reset.
+
+---
+
+## ServerList.json Configuration
+
+The `ServerList.json` file stores your paired servers, entities, and notification settings. Below is a full example with all available options:
+
+```json
+[
+  {
+    "id": 1,
+    "active": true,
+    "name": "My Rust Server",
+    "rustPlusConfigPath": "",
+    "serverIP": "123.45.67.89",
+    "rustPlusPort": 28083,
+    "steamId": 76561198012345678,
+    "playerToken": 123456789,
+    "baseLocationX": 0,
+    "baseLocationY": 0,
+    "radius": 0,
+    "discordWebhook": {
+      "webhookUrl": "https://discord.com/api/webhooks/123456/abcdef",
+      "message": "\ud83d\udea8 **{title}** \u2014 {message}",
+      "userIds": ["123456789012345678", "987654321098765432"]
+    },
+    "entities": [
+      {
+        "entityId": 12345,
+        "entityType": 1,
+        "name": "Base Lights"
+      },
+      {
+        "entityId": 67890,
+        "entityType": 2,
+        "name": "Front Door Alarm",
+        "discordWebhook": {
+          "webhookUrl": "https://discord.com/api/webhooks/789012/ghijkl",
+          "message": "\ud83c\udfe0 FRONT DOOR: {title} \u2014 {message}",
+          "userIds": ["111111111111111111"]
+        }
+      },
+      {
+        "entityId": 11111,
+        "entityType": 3,
+        "name": "TC Monitor"
+      }
+    ]
+  }
+]
+```
+
+### Server settings
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | int | Unique server identifier |
+| `active` | bool | Whether this is the currently active server |
+| `name` | string | Server display name |
+| `serverIP` | string | Server IP address |
+| `rustPlusPort` | int | Rust+ companion port |
+| `steamId` | ulong | Your Steam ID |
+| `playerToken` | int | Player token from Rust+ pairing |
+| `discordWebhook` | object | Default Discord webhook settings for all alarms on this server (optional) |
+
+### Entity settings
+
+| Field | Type | Description |
+|---|---|---|
+| `entityId` | uint | The in-game entity ID |
+| `entityType` | int | `1` = Smart Switch, `2` = Smart Alarm, `3` = Storage Monitor |
+| `name` | string | Display name for the entity |
+| `discordWebhook` | object | Entity-specific Discord webhook settings (optional, overrides server defaults) |
+
+### Discord webhook settings
+
+The `discordWebhook` object can be set at the **server level** (applies to all alarms) and/or at the **entity level** (overrides server defaults for that specific alarm). Entity-level settings take priority per field — so you can share a webhook URL across the server but use a different message per alarm.
+
+| Field | Type | Description |
+|---|---|---|
+| `webhookUrl` | string | Discord webhook URL (create one in Discord: Server Settings > Integrations > Webhooks) |
+| `message` | string | Message template. Use `{title}` and `{message}` as placeholders for the alarm notification data. Default: `🚨 **{title}** — {message}` |
+| `userIds` | string[] | List of Discord user IDs to mention/tag. Get a user's ID by enabling Developer Mode in Discord (Settings > Advanced), then right-click the user > Copy User ID. |
 
 ### Why Chrome or Edge?
 
@@ -107,23 +208,25 @@ The output will be in `RustPlus_Toolbox/bin/Release/net10.0-windows10.0.19041.0/
 ```
 RustPlus_Toolbox.slnx
   |
-  |-- RustPlus_Toolbox/          Windows Forms application (.NET 10)
-  |     |-- Program.cs           Entry point, DI & Serilog setup
-  |     |-- MainWindow.cs        Main form — UI, Rust+ API, FCM orchestration
-  |     |-- MainWindow.Designer  WinForms designer (labels, flow panel)
+  |-- RustPlus_Toolbox/               Windows Forms application (.NET 10)
+  |     |-- Program.cs                Entry point, DI & Serilog setup
+  |     |-- MainWindow.cs             Main form — UI, Rust+ API, FCM orchestration
+  |     |-- MainWindow.Designer.cs    WinForms designer (labels, flow panel)
+  |     |-- DiscordWebhookService.cs  Discord webhook notifications for alarms
+  |     |-- ArctisNovaOledService.cs  Optional Arctis Nova Pro OLED headset display
   |     |-- Models/
-  |     |     |-- ServerItem.cs  Server & entity data models
-  |     |-- ServerList.json      Paired server configuration
+  |     |     |-- ServerItem.cs       Server, entity & Discord webhook data models
+  |     |-- ServerList.json           Paired server configuration
   |
-  |-- RustPlus_FCM/              Class library — FCM registration & MCS listener
-        |-- GoogleFcm.cs         Firebase/GCM device registration
-        |-- McsClient.cs         Google MCS push notification listener (TLS)
-        |-- ApiClient.cs         Expo push token & Rust+ Companion API calls
-        |-- SteamPairing.cs      Steam OAuth login via local HTTP server + Chromium browser
-        |-- RustPlusNotification.cs  Notification data models
-        |-- ConfigManager.cs     JSON config read/write
-        |-- Protobuf.cs          Lightweight protobuf encoder/decoder
-        |-- FileLoggerProvider.cs  File-based ILogger implementation
+  |-- RustPlus_FCM/                   Class library — FCM registration & MCS listener
+        |-- GoogleFcm.cs              Firebase/GCM device registration
+        |-- McsClient.cs              Google MCS push notification listener (TLS)
+        |-- ApiClient.cs              Expo push token & Rust+ Companion API calls
+        |-- SteamPairing.cs           Steam OAuth login via local HTTP server + Chromium browser
+        |-- RustPlusNotification.cs   Notification data models
+        |-- ConfigManager.cs          JSON config read/write
+        |-- Protobuf.cs               Lightweight protobuf encoder/decoder
+        |-- FileLoggerProvider.cs     File-based ILogger implementation
 ```
 
 ### Application flow
@@ -211,6 +314,28 @@ The diagram below shows the step-by-step flow from startup to real-time monitori
  |  - Create Smart Switch buttons      |
  +--------------------------------------+
        |
+       +---> Start FCM Listener (background)
+       |       |
+       |       v
+       |     +--------------------------------------+
+       |     | McsClient (persistent connection)    |
+       |     |                                      |
+       |     |  On alarm notification:             |
+       |     |    - Log the alarm                  |
+       |     |    - Send Discord webhook           |
+       |     |      (server or entity settings)    |
+       |     |                                      |
+       |     |  On entity pairing:                 |
+       |     |    - Add entity to server list      |
+       |     |    - Save ServerList.json            |
+       |     |    - Create Smart Switch button     |
+       |     |                                      |
+       |     |  On other notifications:            |
+       |     |    - Log (player, news, etc.)       |
+       |     |                                      |
+       |     |  Auto-reconnects on disconnect      |
+       |     +--------------------------------------+
+       |
        v
  +--------------------------------------+
  | Main Loop (1-second timer)           |
@@ -218,6 +343,8 @@ The diagram below shows the step-by-step flow from startup to real-time monitori
  |  Every tick:                        |
  |    - Check/reconnect WebSocket      |
  |    - Interpolate & display time     |
+ |    - Show time in taskbar title     |
+ |      when minimized                 |
  |                                      |
  |  Every 60 seconds:                  |
  |    - Fetch server time (GetTime)    |
@@ -241,6 +368,8 @@ The diagram below shows the step-by-step flow from startup to real-time monitori
 | `Microsoft.Extensions.Logging` | 10.0.5 | Logging abstractions (used by RustPlus_FCM) |
 | `Serilog.Extensions.Hosting` | 10.0.0 | Serilog integration with .NET hosting |
 | `Serilog.Sinks.File` | 8.0.0-dev-02318 | Rolling file log output |
+| `HidSharp` | 2.6.4 | USB HID communication (Arctis Nova Pro OLED) |
+| `SkiaSharp` | 3.119.2 | 2D graphics rendering (Arctis Nova Pro OLED) |
 
 ---
 
