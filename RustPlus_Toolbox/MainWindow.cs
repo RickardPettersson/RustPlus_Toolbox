@@ -336,9 +336,9 @@ namespace RustPlus_Toolbox
 
                 CalculateTimeRates();
 
-                _logger.LogDebug(
-                    "Time: {Time:F2}, DayLength: {DayLength} min, Sunrise: {Sunrise}, Sunset: {Sunset}, DayRate: {DayRate:F6}, NightRate: {NightRate:F6} (in-game h/real s)",
-                    _lastServerTime, _dayLengthMinutes, _sunrise, _sunset, _dayRate, _nightRate);
+                //_logger.LogDebug(
+                //    "Time: {Time:F2}, DayLength: {DayLength} min, Sunrise: {Sunrise}, Sunset: {Sunset}, DayRate: {DayRate:F6}, NightRate: {NightRate:F6} (in-game h/real s)",
+                //    _lastServerTime, _dayLengthMinutes, _sunrise, _sunset, _dayRate, _nightRate);
             }
 
             var responseinfo = await _rustPlus.GetInfoAsync().WaitAsync(TimeSpan.FromSeconds(10));
@@ -352,8 +352,8 @@ namespace RustPlus_Toolbox
 
                 if (_lastNumberOfPlayersOnline != responseinfo.Data.PlayerCount)
                 {
-                    _logger.LogInformation("Player count changed: {PlayerCount} / {MaxPlayerCount} - Queue: {QueuedPlayerCount}", 
-                        responseinfo.Data.PlayerCount, responseinfo.Data.MaxPlayerCount, responseinfo.Data.QueuedPlayerCount);
+                    //_logger.LogDebug("Player count changed: {PlayerCount} / {MaxPlayerCount} - Queue: {QueuedPlayerCount} — Server: {Name}", 
+                    //    responseinfo.Data.PlayerCount, responseinfo.Data.MaxPlayerCount, responseinfo.Data.QueuedPlayerCount, responseinfo.Data.Name);
                     
                     _lastNumberOfPlayersOnline = responseinfo.Data.PlayerCount;
                 }
@@ -802,6 +802,7 @@ namespace RustPlus_Toolbox
                         _logger.LogInformation(
                             "FCM Entity Pairing - Title: {Title}, Entity Type: {EntityType}, Entity ID: {EntityId}, Entity Name: {EntityName} — Server: {Name}",
                                 notification.Title, body.EntityType, body.EntityId, body.EntityName, body.Name);
+                        HandleEntityPairing(body);
                         break;
 
                     case "alarm":
@@ -834,6 +835,118 @@ namespace RustPlus_Toolbox
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing FCM notification.");
+            }
+        }
+
+        /// <summary>
+        /// Adds a paired entity to the active server, saves the server list,
+        /// and creates a UI button if the entity is a Smart Switch.
+        /// </summary>
+        private void HandleEntityPairing(RustPlusNotificationBody body)
+        {
+            if (_server == null)
+            {
+                _logger.LogWarning("FCM: Entity pairing received but no active server configured.");
+                return;
+            }
+
+            if (!uint.TryParse(body.EntityId, out var entityId))
+            {
+                _logger.LogWarning("FCM: Entity pairing has invalid EntityId: {EntityId}", body.EntityId);
+                return;
+            }
+
+            int entityType = int.TryParse(body.EntityType, out var et) ? et : 0;
+            string entityName = body.EntityName ?? body.Name ?? $"Entity {entityId}";
+
+            // Check if entity already exists on the server
+            if (_server.Entities.Any(e => e.EntityId == entityId))
+            {
+                _logger.LogInformation("FCM: Entity {EntityId} ({Name}) already exists on server, skipping.", entityId, entityName);
+                return;
+            }
+
+            // Add the entity to the server
+            var entity = new ServerItemEntity
+            {
+                EntityId = entityId,
+                EntityType = entityType,
+                Name = entityName
+            };
+
+            _server.Entities.Add(entity);
+            SaveServerList();
+            _logger.LogInformation("FCM: Entity {EntityId} ({Name}, type {Type}) added to server '{Server}' and saved.",
+                entityId, entityName, entityType, _server.Name);
+
+            // If it's a Smart Switch (type 1), create a button on the UI thread
+            if (entityType == 1)
+            {
+                if (InvokeRequired)
+                    Invoke(() => AddSmartSwitchButton(entity));
+                else
+                    AddSmartSwitchButton(entity);
+            }
+        }
+
+        /// <summary>
+        /// Creates a toggle button for a Smart Switch entity and adds it to the flow panel.
+        /// </summary>
+        private void AddSmartSwitchButton(ServerItemEntity entity)
+        {
+            // Don't add duplicate buttons
+            if (flowLayoutPanel2.Controls.OfType<Button>().Any(b => b.Name == $"btnEntity_{entity.EntityId}"))
+                return;
+
+            var btn = new Button
+            {
+                Text = entity.Name,
+                AutoSize = true,
+                Margin = new Padding(6),
+                Tag = entity,
+                Name = $"btnEntity_{entity.EntityId}"
+            };
+
+            btn.Click += async (_, __) =>
+            {
+                var ent = (ServerItemEntity)btn.Tag!;
+
+                if (ent.State.HasValue)
+                {
+                    await _rustPlus.SetSmartSwitchValueAsync(ent.EntityId, !ent.State.Value).WaitAsync(TimeSpan.FromSeconds(10));
+                }
+                else
+                {
+                    await _rustPlus.ToggleSmartSwitchAsync(ent.EntityId).WaitAsync(TimeSpan.FromSeconds(10));
+                }
+            };
+
+            flowLayoutPanel2.Controls.Add(btn);
+
+            // Fetch current state and set button color
+            _ = LoadInitialSwitchState(entity, btn);
+
+            ResizeFormToFitButtons(maxWidth: 500, maxHeight: 800);
+        }
+
+        /// <summary>
+        /// Fetches the current state of a smart switch and updates the button color.
+        /// </summary>
+        private async Task LoadInitialSwitchState(ServerItemEntity entity, Button btn)
+        {
+            try
+            {
+                var response = await _rustPlus.GetSmartSwitchInfoAsync(entity.EntityId).WaitAsync(TimeSpan.FromSeconds(10));
+                entity.State = response.Data.IsActive;
+
+                if (InvokeRequired)
+                    Invoke(() => btn.BackColor = entity.State.Value ? Color.LightGreen : Color.LightCoral);
+                else
+                    btn.BackColor = entity.State.Value ? Color.LightGreen : Color.LightCoral;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to fetch initial state for entity {EntityId}", entity.EntityId);
             }
         }
 
