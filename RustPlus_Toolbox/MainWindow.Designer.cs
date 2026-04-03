@@ -15,6 +15,7 @@
         {
             if (disposing)
             {
+                StopFcmListener();
                 _oled?.Dispose();
                 components?.Dispose();
             }

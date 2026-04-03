@@ -2,6 +2,7 @@
 using RustPlus_Toolbox.Models;
 using RustPlusApi;
 using RustPlusApi.Data;
+using Serilog.Core;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -19,6 +20,10 @@ namespace RustPlus_Toolbox
         private RustPlus _rustPlus = null;
         private ServerItem _server = null;
         private uint? _lastNumberOfPlayersOnline = 0;
+
+        // FCM listener for push notifications
+        private McsClient? _mcsClient;
+        private CancellationTokenSource? _mcsCts;
 
         // Time prediction fields
         private DateTime _lastApiFetchTime = DateTime.MinValue;
@@ -60,6 +65,9 @@ namespace RustPlus_Toolbox
         private async void MainWindow_LoadAsync(object sender, EventArgs e)
         {
             await CheckConnectionToRustPlus();
+
+            // Start FCM listener for push notifications when we have an active server and FCM credentials
+            StartFcmListenerIfReady();
 
             if (_server != null)
             {
@@ -702,6 +710,144 @@ namespace RustPlus_Toolbox
 
             _logger.LogWarning("Timed out waiting for server pairing notification (5 min).");
             return null;
+        }
+
+        /// <summary>
+        /// Starts a persistent FCM listener if FCM credentials exist and an active server is configured.
+        /// Logs all incoming Rust+ push notifications.
+        /// </summary>
+        private void StartFcmListenerIfReady()
+        {
+            // Already running
+            if (_mcsClient != null)
+                return;
+
+            // Need an active server
+            if (_server == null)
+                return;
+
+            // Need FCM credentials
+            if (!File.Exists(FcmConfigFile))
+            {
+                _logger.LogDebug("No FCM config file found. FCM listener not started.");
+                return;
+            }
+
+            var config = ConfigManager.ReadConfig(FcmConfigFile);
+            var gcm = config["fcm_credentials"]?["gcm"]?.AsObject();
+            if (gcm == null)
+            {
+                _logger.LogWarning("FCM config is missing GCM credentials. FCM listener not started.");
+                return;
+            }
+
+            var androidId = gcm["androidId"]?.GetValue<string>();
+            var securityToken = gcm["securityToken"]?.GetValue<string>();
+
+            if (string.IsNullOrEmpty(androidId) || string.IsNullOrEmpty(securityToken))
+            {
+                _logger.LogWarning("FCM GCM credentials are incomplete. FCM listener not started.");
+                return;
+            }
+
+            _mcsCts = new CancellationTokenSource();
+            _mcsClient = new McsClient(androidId, securityToken, _logger);
+
+            _mcsClient.OnDataReceived += OnFcmNotificationReceived;
+
+            _logger.LogInformation("Starting FCM listener for push notifications...");
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _mcsClient.ConnectAsync(_mcsCts.Token);
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "FCM listener stopped unexpectedly.");
+                }
+            }, _mcsCts.Token);
+        }
+
+        /// <summary>
+        /// Handles all incoming FCM push notifications from Rust+ and logs them.
+        /// </summary>
+        private void OnFcmNotificationReceived(JsonObject data)
+        {
+            try
+            {
+                var notification = data.Deserialize<RustPlusNotification>();
+                if (notification is null)
+                {
+                    _logger.LogWarning("FCM: Received unreadable notification: {Data}", data.ToJsonString());
+                    return;
+                }
+
+                var body = notification.ParseBody();
+                var channelId = notification.ChannelId ?? "unknown";
+                var title = notification.Title ?? "";
+                var message = notification.Message ?? "";
+
+                switch (channelId)
+                {
+                    case "pairing" when body?.Type == "server":
+                        _logger.LogInformation(
+                            "FCM [{Channel}]: Server pairing — {Name} at {Ip}:{Port}",
+                            channelId, body.Name, body.Ip, body.Port);
+                        break;
+
+                    case "pairing" when body?.Type == "entity":
+                        _logger.LogInformation(
+                            "FCM Entity Pairing - Title: {Title}, Entity Type: {EntityType}, Entity ID: {EntityId}, Entity Name: {EntityName} — Server: {Name}",
+                                notification.Title, body.EntityType, body.EntityId, body.EntityName, body.Name);
+                        break;
+
+                    case "alarm":
+                        _logger.LogInformation(
+                            "FCM [{Channel}]: {Title} — {Message} — Server: {Name}",
+                            channelId, title, message, body?.Name ?? "unknown");
+                        break;
+
+                    case "player":
+                        _logger.LogInformation(
+                            "FCM [{Channel}]: {Title} — {Message} — Server: {Name}",
+                            channelId, title, message, body?.Name ?? "unknown");
+                        break;
+
+                    case "news":
+                        _logger.LogInformation(
+                            "FCM [{Channel}]: {Title} — {Message} — Server: {Name}",
+                            channelId, title, message, body?.Name ?? "unknown");
+                        break;
+
+                    default:
+                        _logger.LogInformation(
+                            "FCM [{Channel}]: {Title} — {Message} (body: {Body}) — Server: {Name}",
+                            channelId, title, message,
+                            body != null ? JsonSerializer.Serialize(body) : "null",
+                            body?.Name ?? "unknown");
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing FCM notification.");
+            }
+        }
+
+        /// <summary>
+        /// Stops the FCM listener and releases resources.
+        /// </summary>
+        private void StopFcmListener()
+        {
+            _mcsCts?.Cancel();
+            _mcsClient?.Dispose();
+            _mcsClient = null;
+            _mcsCts?.Dispose();
+            _mcsCts = null;
+            _logger.LogInformation("FCM listener stopped.");
         }
 
         private void SaveServerList()
