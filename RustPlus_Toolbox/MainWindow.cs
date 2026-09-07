@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using RustPlus_Toolbox.Models;
 using RustPlusApi;
 using RustPlusApi.Data;
@@ -14,7 +15,7 @@ namespace RustPlus_Toolbox
     {
         private readonly ILogger<MainWindow> _logger;
         private readonly Timer _timer;
-        private readonly ArctisNovaOledService _oled;
+        private readonly ArctisNovaOledService? _oled;
         private bool _runningGetData;
         private List<ServerItem> _servers = new List<ServerItem>();
         private RustPlus _rustPlus = null;
@@ -44,19 +45,27 @@ namespace RustPlus_Toolbox
         private double _dayRate;
         private double _nightRate;
 
-        public MainWindow(ILogger<MainWindow> logger)
+        public MainWindow(ILogger<MainWindow> logger, IConfiguration configuration)
         {
             InitializeComponent();
             _logger = logger;
 
-            // Try to connect to Arctis Nova Pro OLED (non-blocking, optional)
             _discordWebhook = new DiscordWebhookService(logger);
 
-            _oled = new ArctisNovaOledService(logger);
-            if (_oled.TryConnect())
-                _logger.LogInformation("Arctis Nova Pro OLED display available.");
+            // Try to connect to Arctis Nova Pro OLED (non-blocking, optional)
+            // Turned off entirely when ActivateArctisNovaProDisplay is false in appsettings.json.
+            if (configuration.GetValue<bool>("ActivateArctisNovaProDisplay"))
+            {
+                _oled = new ArctisNovaOledService(logger);
+                if (_oled.TryConnect())
+                    _logger.LogInformation("Arctis Nova Pro OLED display available.");
+                else
+                    _logger.LogInformation("No Arctis Nova Pro OLED display detected. Continuing without it.");
+            }
             else
-                _logger.LogInformation("No Arctis Nova Pro OLED display detected. Continuing without it.");
+            {
+                _logger.LogInformation("Arctis Nova Pro OLED display disabled via ActivateArctisNovaProDisplay.");
+            }
 
             SetupServerList();
 
@@ -433,8 +442,8 @@ namespace RustPlus_Toolbox
             else
                 Text = "RustPlus Toolbox";
 
-            // Update Arctis Nova Pro OLED display if connected
-            if (_oled.IsConnected || _oled.TryConnect())
+            // Update Arctis Nova Pro OLED display if enabled and connected
+            if (_oled != null && (_oled.IsConnected || _oled.TryConnect()))
             {
                 _oled.UpdateDisplay(time_hhmm, isDay, sunrise_hhmm, sunset_hhmm);
             }
